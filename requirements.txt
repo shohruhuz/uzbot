@@ -6,3 +6,4 @@ cryptography
 matplotlib
 fpdf
 apscheduler
+flask
