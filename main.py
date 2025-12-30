@@ -2,6 +2,7 @@ import os
 import asyncio
 import threading
 import logging
+import time
 from flask import Flask
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
@@ -34,7 +35,6 @@ bot = Bot(token=TOKEN, parse_mode=types.ParseMode.MARKDOWN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
 
-# Bosqichma-bosqich holatlar
 class BotState(StatesGroup):
     waiting_for_login = State()
     waiting_for_password = State()
@@ -57,21 +57,19 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
     await BotState.waiting_for_login.set()
 
-# 1. Loginni qabul qilish
 @dp.message_handler(state=BotState.waiting_for_login)
 async def process_login(message: types.Message, state: FSMContext):
     await state.update_data(l=message.text.strip())
     await message.answer("Endi, eMaktab **parolingizni** kiriting:")
     await BotState.waiting_for_password.set()
 
-# 2. Parolni qabul qilish va kirishga urinish
 @dp.message_handler(state=BotState.waiting_for_password)
 async def process_password(message: types.Message, state: FSMContext):
     password = message.text.strip()
     data = await state.get_data()
     login = data['l']
     
-    await message.answer("⏳ eMaktabga ulanilmoqda...")
+    msg = await message.answer("⏳ eMaktabga ulanilmoqda...")
     
     api = EMaktabAPI(login, password)
     res = api.login_attempt()
@@ -93,7 +91,6 @@ async def process_password(message: types.Message, state: FSMContext):
         await message.answer("❌ Login yoki parol xato. Qaytadan **loginni** yuboring:")
         await BotState.waiting_for_login.set()
 
-# 3. Captchani qabul qilish va yuborish
 @dp.message_handler(state=BotState.captcha)
 async def handle_captcha(message: types.Message, state: FSMContext):
     captcha_answer = message.text.strip()
@@ -122,18 +119,34 @@ def save_to_db(user_id, login, password, cookies):
         upsert=True
     )
 
-# --- ISHGA TUSHIRISH ---
+# --- ISHGA TUSHIRISH LOGIKASI ---
+
 async def on_startup(dispatcher):
-    scheduler.start()
-    logger.info("Bot ishga tushdi!")
+    if not scheduler.running:
+        scheduler.start()
+    logger.info("Bot tizimi ishga tushdi!")
 
 def run_bot():
+    """Botni xatoliklarga chidamli (robust) usulda ishga tushirish"""
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    
+    while True:
+        try:
+            logger.info("Polling boshlanmoqda...")
+            executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+        except Exception as e:
+            logger.error(f"Pollingda xatolik: {e}")
+            # Conflict yoki internet uzilsa 5 soniya kutib qayta urinadi
+            time.sleep(5)
 
 if __name__ == "__main__":
+    # Render uchun port
     port = int(os.environ.get("PORT", 10000))
+    
+    # 1. Botni parallel oqimda ishga tushirish
     threading.Thread(target=run_bot, daemon=True).start()
-    logger.info(f"Flask server {port}-portda ishga tushmoqda...")
+    
+    # 2. Flaskni asosiy oqimda ishga tushirish (Render portni ko'rishi uchun)
+    logger.info(f"Veb-server {port}-portda ishga tushdi.")
     flask_app.run(host="0.0.0.0", port=port)
