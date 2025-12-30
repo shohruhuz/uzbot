@@ -29,7 +29,7 @@ def health():
 # --- BOT SOZLAMALARI ---
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("BOT_TOKEN muhit o'zgaruvchisi topilmadi!")
+    raise ValueError("BOT_TOKEN topilmadi!")
 
 bot = Bot(token=TOKEN, parse_mode=types.ParseMode.MARKDOWN)
 dp = Dispatcher(bot, storage=MemoryStorage())
@@ -67,23 +67,24 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         await BotState.waiting_for_login.set()
 
-# Login qabul qilish
 @dp.message_handler(state=BotState.waiting_for_login)
 async def process_login(message: types.Message, state: FSMContext):
     await state.update_data(l=message.text.strip())
     await message.answer("Endi **parolingizni** kiriting:")
     await BotState.waiting_for_password.set()
 
-# Parol va Captcha tekshiruvi
 @dp.message_handler(state=BotState.waiting_for_password)
 async def process_password(message: types.Message, state: FSMContext):
     password = message.text.strip()
     data = await state.get_data()
     login = data['l']
     
-    msg = await message.answer("⏳ eMaktab tizimiga ulanilmoqda...")
+    await message.answer("⏳ eMaktab tizimiga ulanilmoqda...")
+    
+    loop = asyncio.get_event_loop()
     api = EMaktabAPI(login, password)
-    res = api.login_attempt()
+    # Login jarayonini asinxron bajarish
+    res = await loop.run_in_executor(None, api.login_attempt)
     
     if res['status'] == 'captcha':
         await state.update_data(p=password)
@@ -98,20 +99,21 @@ async def process_password(message: types.Message, state: FSMContext):
         await message.answer("❌ Login yoki parol xato. Qaytadan **loginni** kiriting:")
         await BotState.waiting_for_login.set()
 
-# Captcha yuborish
 @dp.message_handler(state=BotState.captcha)
 async def handle_captcha(message: types.Message, state: FSMContext):
     captcha_answer = message.text.strip()
     data = await state.get_data()
+    loop = asyncio.get_event_loop()
+    
     api = EMaktabAPI(data['l'], data['p'])
-    res = api.login_attempt(captcha_answer=captcha_answer)
+    res = await loop.run_in_executor(None, api.login_attempt, captcha_answer)
     
     if res['status'] == 'success':
         save_to_db(message.from_user.id, data['l'], data['p'], res['cookies'])
-        await message.answer("✅ Captcha tasdiqlandi. Akkaunt ulandi!", reply_markup=main_kb())
+        await message.answer("✅ Akkaunt muvaffaqiyatli ulandi!", reply_markup=main_kb())
         await state.finish()
     else:
-        await message.answer("❌ Kod xato. Iltimos, qaytadan **loginni** kiriting:")
+        await message.answer("❌ Kod xato. Loginni qaytadan kiriting:")
         await BotState.waiting_for_login.set()
 
 # --- REAL FUNKSIYALAR TUGMALARI ---
@@ -121,8 +123,15 @@ async def get_timetable(message: types.Message):
     acc = get_active_account(message.from_user.id)
     if not acc: return await message.answer("Avval akkaunt ulang.")
     
-    api = EMaktabAPI(acc['login'], decrypt_pw(acc['password']), acc['cookies'])
-    data = api.get_schedule() # API dan real jadval
+    wait_msg = await message.answer("⏳ Jadval yuklanmoqda...")
+    loop = asyncio.get_event_loop()
+    
+    # MUHIM: Xatolikni oldini olish uchun 3 ta argument
+    api = EMaktabAPI(acc['login'], decrypt_pw(acc['password']))
+    api.cookies = acc['cookies'] # Cookies alohida o'zlashtiriladi
+    
+    data = await loop.run_in_executor(None, api.get_schedule)
+    await wait_msg.delete()
     await message.answer(f"📅 **Sizning dars jadvalingiz:**\n\n{data}")
 
 @dp.message_handler(lambda m: m.text == "📊 Baholarim")
@@ -130,26 +139,38 @@ async def get_grades(message: types.Message):
     acc = get_active_account(message.from_user.id)
     if not acc: return
     
-    api = EMaktabAPI(acc['login'], decrypt_pw(acc['password']), acc['cookies'])
-    grades = api.get_grades() # API dan real baholar
+    wait_msg = await message.answer("⏳ Baholar tahlil qilinmoqda...")
+    loop = asyncio.get_event_loop()
+    
+    api = EMaktabAPI(acc['login'], decrypt_pw(acc['password']))
+    api.cookies = acc['cookies']
+    
+    grades = await loop.run_in_executor(None, api.get_grades)
+    await wait_msg.delete()
     await message.answer(f"📊 **Oxirgi baholaringiz:**\n\n{grades}")
 
 @dp.message_handler(lambda m: m.text == "🛑 Davomat")
 async def get_attendance(message: types.Message):
     acc = get_active_account(message.from_user.id)
     if not acc: return
-    api = EMaktabAPI(acc['login'], decrypt_pw(acc['password']), acc['cookies'])
-    report = api.get_attendance()
+    
+    wait_msg = await message.answer("⏳ Davomat tekshirilmoqda...")
+    loop = asyncio.get_event_loop()
+    
+    api = EMaktabAPI(acc['login'], decrypt_pw(acc['password']))
+    api.cookies = acc['cookies']
+    
+    report = await loop.run_in_executor(None, api.get_attendance)
+    await wait_msg.delete()
     await message.answer(f"🛑 **Davomat hisoboti:**\n\n{report}")
 
-# --- YASHIRIN FUNKSIYALAR (Admin uchun) ---
+# --- ADMIN STATS ---
 @dp.message_handler(commands=['admin_stats'])
 async def admin_stats(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     count = users_col.count_documents({})
     await message.answer(f"📊 **Bot statistikasi:**\n\nJami foydalanuvchilar: {count}")
 
-# Ma'lumotlarni saqlash
 def save_to_db(user_id, login, password, cookies):
     users_col.update_one(
         {"user_id": user_id},
@@ -162,7 +183,7 @@ def save_to_db(user_id, login, password, cookies):
 # --- ISHGA TUSHIRISH ---
 async def on_startup(dispatcher):
     if not scheduler.running: scheduler.start()
-    logger.info("Bot Real rejimda ishga tushdi!")
+    logger.info("Bot tizimi muvaffaqiyatli ishga tushdi!")
 
 def run_bot():
     loop = asyncio.new_event_loop()
@@ -170,7 +191,8 @@ def run_bot():
     while True:
         try:
             executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Polling error: {e}")
             time.sleep(5)
 
 if __name__ == "__main__":
