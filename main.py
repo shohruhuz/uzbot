@@ -1,4 +1,5 @@
 import os
+import asyncio
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.dispatcher import FSMContext
@@ -7,6 +8,7 @@ from database import users_col, encrypt_pw, decrypt_pw, get_active_account
 from emaktab_api import EMaktabAPI
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+# Bot va Dispatcher sozlamalari
 bot = Bot(token=os.getenv("BOT_TOKEN"))
 dp = Dispatcher(bot, storage=MemoryStorage())
 scheduler = AsyncIOScheduler()
@@ -43,7 +45,6 @@ async def handle_auth(message: types.Message, state: FSMContext):
         await bot.send_photo(message.chat.id, res['url'], caption="Rasmdagi kodni kiriting:")
         await BotState.captcha.set()
     elif res['status'] == 'success':
-        # Akkauntni MongoDB-ga shifrlab saqlash
         users_col.update_one(
             {"user_id": message.from_user.id},
             {"$push": {"accounts": {"login": login, "password": encrypt_pw(pw), "cookies": res['cookies'], "active": True}}},
@@ -77,15 +78,20 @@ async def handle_captcha(message: types.Message, state: FSMContext):
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     count = users_col.count_documents({})
-    await message.answer(f"📊 Statistika:\n👤 Foydalanuvchilar: {count}\n✅ Faol sessiyalar: {count}")
+    await message.answer(f"📊 Statistika:\n👤 Foydalanuvchilar: {count}")
 
 # --- AUTO REFRESH (YASHIRIN) ---
 async def auto_refresh():
-    # Bu yerda sessiyalarni yangilab turish kodi ishlaydi
-    pass
+    # Bu yerda sessiyalarni yangilash kodi bo'ladi
+    print("Sessiyalar yangilanmoqda...")
 
-scheduler.add_job(auto_refresh, 'cron', hour='12,16')
-scheduler.start()
+# --- ON STARTUP (XATONI TUZATISH QISMI) ---
+async def on_startup(dispatcher):
+    # Scheduler faqat loop ishga tushgandan keyin boshlanishi shart
+    scheduler.add_job(auto_refresh, 'cron', hour='12,16')
+    scheduler.start()
+    print("Bot muvaffaqiyatli ishga tushdi!")
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    # scheduler.start() ni bu yerdan olib tashladik va on_startup ichiga qo'shdik
+    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
