@@ -1,6 +1,7 @@
 aiogram==2.25.1
 requests
-pymongo[srv]
+pymongo==4.6.1
+dnspython
 cryptography
 matplotlib
 fpdf
