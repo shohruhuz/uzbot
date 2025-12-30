@@ -106,6 +106,24 @@ async def handle_captcha(message: types.Message, state: FSMContext):
     else:
         await message.answer("❌ Kod noto'g'ri. Iltimos, qaytadan **loginni** kiriting:")
         await BotState.waiting_for_login.set()
+# --- ASOSIY MENYU TUGMALARI ---
+
+@dp.message_handler(lambda message: message.text == "📅 Dars Jadvali")
+async def get_timetable(message: types.Message):
+    await message.answer("📅 **Bugungi dars jadvalingiz:**\n\n1. Matematika\n2. Ona tili\n3. Ingliz tili\n\n_Hozircha test rejimida ishlamoqda._")
+
+@dp.message_handler(lambda message: message.text == "📊 Baholarim")
+async def get_grades(message: types.Message):
+    await message.answer("📊 **Oxirgi baholaringiz:**\n\nMatematika: 5\nOna tili: 4\nFizika: 5")
+
+@dp.message_handler(lambda message: message.text == "👤 Akkauntlar")
+async def show_accounts(message: types.Message):
+    user = users_col.find_one({"user_id": message.from_user.id})
+    if user and "accounts" in user:
+        acc_list = "\n".join([f"👤 `{acc['login']}`" for acc in user['accounts']])
+        await message.answer(f"🗂 **Ulangan akkauntlar:**\n\n{acc_list}")
+    else:
+        await message.answer("⚠️ Akkauntlar topilmadi. Avval tizimga kiring.")
 
 def save_to_db(user_id, login, password, cookies):
     users_col.update_one(
